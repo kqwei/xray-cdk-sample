@@ -5,7 +5,7 @@ import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs'
 import { Queue } from 'aws-cdk-lib/aws-sqs'
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources'
 import { AttributeType, Table } from 'aws-cdk-lib/aws-dynamodb'
-// import { LambdaIntegration } from 'aws-cdk-lib/aws-apigateway'
+import { IdentitySource, LambdaIntegration, RestApi, TokenAuthorizer } from 'aws-cdk-lib/aws-apigateway'
 
 export class SampleServiceStack extends NestedStack {
   constructor(
@@ -61,7 +61,7 @@ export class SampleServiceStack extends NestedStack {
       },
       tracing: Tracing.ACTIVE,
     })
-    // const sampleProducerLambdaIntergration = new LambdaIntegration(sampleProducerLambda)
+    const sampleProducerLambdaIntergration = new LambdaIntegration(sampleProducerLambda)
     sampleTable.grantReadWriteData(sampleProducerLambda)
     sqs.grantSendMessages(sampleProducerLambda)
 
@@ -84,16 +84,39 @@ export class SampleServiceStack extends NestedStack {
       maxConcurrency: 2,
     }))
 
-    // /**
-    // * ApiGateway
-    // */
-    // const sampleApi = new HttpApi(this, "sample-api", {
-    //   apiName: `sample-api`,
-    // });
-    // sampleApi.addRoutes({
-    //   path: "/samples",
-    //   methods: [HttpMethod.GET],
-    //   integration: sampleProducerLambdaIntergration
-    // });
+    /**
+    * Authorizer Lambda Function
+    */
+
+    const sampleAuthorizerLambda = new NodejsFunction(this, 'sample-authorizer', {
+      functionName: 'sample-authorizer',
+      entry: './lambda/functions/sample-authorizer/index.ts',
+      handler: 'handler',
+      runtime: Runtime.NODEJS_20_X,
+      memorySize: 1024,
+      timeout: Duration.seconds(15),
+      layers: [commonLayer],
+      tracing: Tracing.ACTIVE,
+    })
+
+    /**
+    * ApiGateway
+    */
+    const sampleApi = new RestApi(this, 'sample-api', {
+      restApiName: `sample-api`,
+      deployOptions: {
+        stageName: 'v1',
+        tracingEnabled: true,
+      },
+    })
+    const sampleApiAuthorizer = new TokenAuthorizer(this, 'sample-api-authorizer', {
+      authorizerName: 'sampleAuthorizer',
+      handler: sampleAuthorizerLambda, // ここでLambda Authorizer用のLambda関数を割り当てる
+      identitySource: IdentitySource.header('Authorization'), // アクセストークンを渡すためのヘッダーを指定
+    })
+    const samplesResource = sampleApi.root.addResource('samples')
+    samplesResource.addMethod('GET', sampleProducerLambdaIntergration, {
+      authorizer: sampleApiAuthorizer,
+    })
   }
 }
